@@ -44,49 +44,79 @@ app.get('/api/teste', (_req, res) => {
   });
 });
 
-app.get('/api/produtos', (req, res) => {
-  const busca = String(req.query.busca || '').toLowerCase();
+app.get('/api/produtos', async (req, res) => {
+  const busca = String(req.query.busca || '').trim();
 
-  const produtos = [
-    {
-      id: '1',
-      nome: 'Fone Bluetooth Sem Fio',
+  if (!busca) {
+    return res.json({
+      sucesso: true,
+      busca: '',
+      quantidade: 0,
+      produtos: [],
+    });
+  }
+
+  if (!ML_ACCESS_TOKEN) {
+    return res.status(401).json({
+      sucesso: false,
+      erro: 'Mercado Livre ainda não foi autorizado.',
+    });
+  }
+
+  try {
+    const url = new URL(
+      'https://api.mercadolibre.com/sites/MLB/search'
+    );
+
+    url.searchParams.set('q', busca);
+    url.searchParams.set('limit', '20');
+    url.searchParams.set('sort', 'price_asc');
+
+    const resposta = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${ML_ACCESS_TOKEN}`,
+      },
+    });
+
+    const dados = await resposta.json();
+
+    if (!resposta.ok) {
+      console.error('Erro na busca do Mercado Livre:', dados);
+
+      return res.status(resposta.status).json({
+        sucesso: false,
+        erro: 'Não foi possível buscar produtos no Mercado Livre.',
+        detalhes: dados,
+      });
+    }
+
+    const produtos = (dados.results || []).map((produto: any) => ({
+      id: produto.id,
+      nome: produto.title,
       plataforma: 'Mercado Livre',
-      preco: 79.90,
-      precoAnterior: 99.90,
-      avaliacao: 4.8,
-      linkAfiliado: 'https://exemplo.com/oferta-1',
-    },
-    {
-      id: '2',
-      nome: 'Fone Bluetooth Esportivo',
-      plataforma: 'Shopee',
-      preco: 59.90,
-      precoAnterior: 89.90,
-      avaliacao: 4.7,
-      linkAfiliado: 'https://exemplo.com/oferta-2',
-    },
-    {
-      id: '3',
-      nome: 'Fone de Ouvido Bluetooth',
-      plataforma: 'Mercado Livre',
-      preco: 69.90,
-      precoAnterior: 94.90,
-      avaliacao: 4.9,
-      linkAfiliado: 'https://exemplo.com/oferta-3',
-    },
-  ];
+      preco: produto.price,
+      precoAnterior: produto.original_price || null,
+      avaliacao: null,
+      linkAfiliado: produto.permalink,
+      imagem: produto.thumbnail,
+      condicao: produto.condition,
+      vendedorId: produto.seller?.id || null,
+    }));
 
-  const resultados = produtos.filter((produto) =>
-    produto.nome.toLowerCase().includes(busca)
-  );
+    return res.json({
+      sucesso: true,
+      busca,
+      quantidade: produtos.length,
+      produtos,
+    });
+  } catch (erro) {
+    console.error('Erro ao comunicar com Mercado Livre:', erro);
 
-  res.json({
-    sucesso: true,
-    busca,
-    quantidade: resultados.length,
-    produtos: resultados,
-  });
+    return res.status(500).json({
+      sucesso: false,
+      erro: 'Falha de comunicação com o Mercado Livre.',
+    });
+  }
 });
 
 // Inicia o OAuth do Mercado Livre
