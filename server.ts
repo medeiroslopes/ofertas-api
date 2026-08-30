@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
@@ -17,6 +18,8 @@ const ML_REDIRECT_URI =
   'https://ofertas-api-hzi5.onrender.com/auth/mercadolivre/callback';
    
 let ML_ACCESS_TOKEN: string | null = null;
+let ML_REFRESH_TOKEN: string | null = null;
+let ML_TOKEN_EXPIRES_AT: number | null = null;
 
 // Armazena temporariamente state e PKCE verifier.
 // Para nosso primeiro teste, isso é suficiente.
@@ -44,6 +47,62 @@ app.get('/api/teste', (_req, res) => {
   });
 });
 
+
+async function garantirAccessToken(): Promise<string | null> {
+  if (
+    ML_ACCESS_TOKEN &&
+    ML_TOKEN_EXPIRES_AT &&
+    Date.now() < ML_TOKEN_EXPIRES_AT - 60_000
+  ) {
+    return ML_ACCESS_TOKEN;
+  }
+
+  if (!ML_REFRESH_TOKEN || !ML_CLIENT_ID || !ML_CLIENT_SECRET) {
+    return null;
+  }
+
+  try {
+    const resposta = await fetch(
+      'https://api.mercadolibre.com/oauth/token',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: ML_CLIENT_ID,
+          client_secret: ML_CLIENT_SECRET,
+          refresh_token: ML_REFRESH_TOKEN,
+        }),
+      }
+    );
+
+    const dados = await resposta.json();
+
+    if (!resposta.ok) {
+      console.error('Erro ao renovar token do Mercado Livre:', dados);
+      return null;
+    }
+
+    ML_ACCESS_TOKEN = dados.access_token;
+
+    if (dados.refresh_token) {
+      ML_REFRESH_TOKEN = dados.refresh_token;
+    }
+
+    if (dados.expires_in) {
+      ML_TOKEN_EXPIRES_AT =
+        Date.now() + Number(dados.expires_in) * 1000;
+    }
+
+    return ML_ACCESS_TOKEN;
+  } catch (erro) {
+    console.error('Erro ao renovar token:', erro);
+    return null;
+  }
+}
+
 app.get('/api/produtos', async (req, res) => {
   const busca = String(req.query.busca || '').trim();
 
@@ -56,61 +115,130 @@ app.get('/api/produtos', async (req, res) => {
     });
   }
 
-  if (!ML_ACCESS_TOKEN) {
+  const accessToken = await garantirAccessToken();
+
+  if (!accessToken) {
     return res.status(401).json({
       sucesso: false,
-      erro: 'Mercado Livre ainda não foi autorizado.',
+      erro: 'Mercado Livre não autorizado ou token expirado.',
     });
   }
 
   try {
-    const url = new URL(
-      'https://api.mercadolibre.com/sites/MLB/search'
+    // 1. Busca produtos de catálogo
+    const buscaUrl = new URL(
+      'https://api.mercadolibre.com/products/search'
     );
 
-    url.searchParams.set('q', busca);
-    url.searchParams.set('limit', '20');
-    url.searchParams.set('sort', 'price_asc');
+    buscaUrl.searchParams.set('status', 'active');
+    buscaUrl.searchParams.set('site_id', 'MLB');
+    buscaUrl.searchParams.set('q', busca);
+    buscaUrl.searchParams.set('limit', '10');
 
-    const resposta = await fetch(url.toString(), {
+    const respostaBusca = await fetch(buscaUrl.toString(), {
       headers: {
-        Authorization: `Bearer ${ML_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${accessToken}`,
       },
     });
 
-    const dados = await resposta.json();
+    const dadosBusca = await respostaBusca.json();
 
-    if (!resposta.ok) {
-      console.error('Erro na busca do Mercado Livre:', dados);
+    if (!respostaBusca.ok) {
+      console.error(
+        'Erro na busca de produtos do Mercado Livre:',
+        dadosBusca
+      );
 
-      return res.status(resposta.status).json({
+      return res.status(respostaBusca.status).json({
         sucesso: false,
-        erro: 'Não foi possível buscar produtos no Mercado Livre.',
-        detalhes: dados,
+        erro: 'Não foi possível pesquisar produtos no Mercado Livre.',
+        detalhes: dadosBusca,
       });
     }
 
-    const produtos = (dados.results || []).map((produto: any) => ({
-      id: produto.id,
-      nome: produto.title,
-      plataforma: 'Mercado Livre',
-      preco: produto.price,
-      precoAnterior: produto.original_price || null,
-      avaliacao: null,
-      linkAfiliado: produto.permalink,
-      imagem: produto.thumbnail,
-      condicao: produto.condition,
-      vendedorId: produto.seller?.id || null,
-    }));
+    const produtosCatalogo = dadosBusca.results || [];
+
+    // 2. Para cada produto, busca as publicações/ofertas
+    const produtosComOfertas = await Promise.all(
+      produtosCatalogo.map(async (produto: any) => {
+        try {
+          const ofertasUrl = new URL(
+            `https://api.mercadolibre.com/products/${produto.id}/items`
+          );
+
+          ofertasUrl.searchParams.set('limit', '20');
+
+          const respostaOfertas = await fetch(
+            ofertasUrl.toString(),
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+            }
+          );
+
+          const dadosOfertas = await respostaOfertas.json();
+
+          if (!respostaOfertas.ok) {
+            console.error(
+              `Erro nas ofertas do produto ${produto.id}:`,
+              dadosOfertas
+            );
+
+            return [];
+          }
+
+          return (dadosOfertas.results || []).map(
+            (oferta: any) => ({
+              id: oferta.item_id,
+              produtoId: produto.id,
+              nome: produto.name,
+              plataforma: 'Mercado Livre',
+              preco: oferta.price,
+              moeda: oferta.currency_id,
+              vendedorId: oferta.seller_id,
+              condicao: oferta.condition,
+              link: `https://www.mercadolivre.com.br/p/${produto.id}`,
+              imagem: produto.pictures?.[0]?.url || null,
+            })
+          );
+        } catch (erro) {
+          console.error(
+            `Erro ao consultar ofertas do produto ${produto.id}:`,
+            erro
+          );
+
+          return [];
+        }
+      })
+    );
+
+    // 3. Junta todas as ofertas
+    const ofertas = produtosComOfertas.flat();
+
+    // 4. Remove ofertas sem preço
+    const ofertasValidas = ofertas.filter(
+      (oferta: any) =>
+        typeof oferta.preco === 'number' &&
+        oferta.preco > 0
+    );
+
+    // 5. Ordena do menor para o maior preço
+    ofertasValidas.sort(
+      (a: any, b: any) => a.preco - b.preco
+    );
 
     return res.json({
       sucesso: true,
       busca,
-      quantidade: produtos.length,
-      produtos,
+      quantidade: ofertasValidas.length,
+      produtos: ofertasValidas,
     });
   } catch (erro) {
-    console.error('Erro ao comunicar com Mercado Livre:', erro);
+    console.error(
+      'Erro geral ao buscar produtos:',
+      erro
+    );
 
     return res.status(500).json({
       sucesso: false,
@@ -118,6 +246,7 @@ app.get('/api/produtos', async (req, res) => {
     });
   }
 });
+
 
 // Inicia o OAuth do Mercado Livre
 app.get('/auth/mercadolivre', (_req, res) => {
@@ -234,6 +363,14 @@ app.get('/auth/mercadolivre/callback', async (req, res) => {
     }
 
 ML_ACCESS_TOKEN = dados.access_token;
+ML_REFRESH_TOKEN = dados.refresh_token || null;
+
+if (dados.expires_in) {
+  ML_TOKEN_EXPIRES_AT =
+    Date.now() + Number(dados.expires_in) * 1000;
+} else {
+  ML_TOKEN_EXPIRES_AT = null;
+}
 
     // NÃO mostramos o access_token na resposta.
     // Ele deverá ser armazenado com segurança em uma etapa posterior.
@@ -291,6 +428,52 @@ app.get('/api/mercadolivre/usuario', async (_req, res) => {
     });
   } catch (erro) {
     console.error('Erro ao comunicar com Mercado Livre:', erro);
+
+    return res.status(500).json({
+      sucesso: false,
+      erro: 'Falha de comunicação com o Mercado Livre.',
+    });
+  }
+});
+
+app.get('/api/mercadolivre/aplicacao', async (_req, res) => {
+  const accessToken = await garantirAccessToken();
+
+  if (!accessToken) {
+    return res.status(401).json({
+      sucesso: false,
+      erro: 'Mercado Livre não autorizado ou token expirado.',
+    });
+  }
+
+  try {
+    const resposta = await fetch(
+      'https://api.mercadolibre.com/applications/7816206091755726',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    const dados = await resposta.json();
+
+    if (!resposta.ok) {
+      console.error('Erro ao consultar aplicação:', dados);
+
+      return res.status(resposta.status).json({
+        sucesso: false,
+        erro: 'Não foi possível consultar a aplicação no Mercado Livre.',
+        detalhes: dados,
+      });
+    }
+
+    return res.json({
+      sucesso: true,
+      aplicacao: dados,
+    });
+  } catch (erro) {
+    console.error('Erro ao consultar aplicação:', erro);
 
     return res.status(500).json({
       sucesso: false,
