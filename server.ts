@@ -15,6 +15,8 @@ const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET;
 const ML_REDIRECT_URI =
   process.env.ML_REDIRECT_URI ||
   'https://ofertas-api-hzi5.onrender.com/auth/mercadolivre/callback';
+   
+let ML_ACCESS_TOKEN: string | null = null;
 
 // Armazena temporariamente state e PKCE verifier.
 // Para nosso primeiro teste, isso é suficiente.
@@ -201,6 +203,8 @@ app.get('/auth/mercadolivre/callback', async (req, res) => {
       });
     }
 
+ML_ACCESS_TOKEN = dados.access_token;
+
     // NÃO mostramos o access_token na resposta.
     // Ele deverá ser armazenado com segurança em uma etapa posterior.
     return res.json({
@@ -210,6 +214,50 @@ app.get('/auth/mercadolivre/callback', async (req, res) => {
       tipo_token: dados.token_type || null,
       expiracao_segundos: dados.expires_in || null,
       usuario_id: dados.user_id || null,
+    });
+  } catch (erro) {
+    console.error('Erro ao comunicar com Mercado Livre:', erro);
+
+    return res.status(500).json({
+      sucesso: false,
+      erro: 'Falha de comunicação com o Mercado Livre.',
+    });
+  }
+});
+
+app.get('/api/mercadolivre/usuario', async (_req, res) => {
+  if (!ML_ACCESS_TOKEN) {
+    return res.status(401).json({
+      sucesso: false,
+      erro: 'Mercado Livre ainda não foi autorizado.',
+    });
+  }
+
+  try {
+    const resposta = await fetch(
+      'https://api.mercadolibre.com/users/me',
+      {
+        headers: {
+          Authorization: `Bearer ${ML_ACCESS_TOKEN}`,
+        },
+      }
+    );
+
+    const dados = await resposta.json();
+
+    if (!resposta.ok) {
+      console.error('Erro ao consultar usuário:', dados);
+
+      return res.status(resposta.status).json({
+        sucesso: false,
+        erro: 'Não foi possível consultar o usuário no Mercado Livre.',
+        detalhes: dados,
+      });
+    }
+
+    return res.json({
+      sucesso: true,
+      usuario: dados,
     });
   } catch (erro) {
     console.error('Erro ao comunicar com Mercado Livre:', erro);
