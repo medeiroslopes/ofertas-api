@@ -1,0 +1,16 @@
+{
+  "name": "ofertas-api",
+  "version": "1.0.0",
+  "description": "Backend do Ofertas App",
+  "main": "server.ts",
+  "scripts": {
+    "dev": "tsx server.ts"
+  },
+  "keywords": [
+    "ofertas",
+    "mercado-livre",
+    "shopee"
+  ],
+  "author": "",
+  "license": "ISC"
+}
