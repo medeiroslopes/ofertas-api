@@ -18,7 +18,7 @@ const ML_REDIRECT_URI =
   'https://ofertas-api-hzi5.onrender.com/auth/mercadolivre/callback';
    
 let ML_ACCESS_TOKEN: string | null = null;
-let ML_REFRESH_TOKEN: string | null = null;
+let ML_REFRESH_TOKEN: string | null = process.env.ML_REFRESH_TOKEN || null;
 let ML_TOKEN_EXPIRES_AT: number | null = null;
 
 // Armazena temporariamente state e PKCE verifier.
