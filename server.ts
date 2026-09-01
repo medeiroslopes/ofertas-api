@@ -1,18 +1,31 @@
 import 'dotenv/config';
+
 import express, {
   Request,
-  Response,
+  Response as ExpressResponse,
 } from 'express';
+
 import cors from 'cors';
 import crypto from 'crypto';
-import { createClient } from '@supabase/supabase-js';
+
+import {
+  createClient,
+  SupabaseClient,
+} from '@supabase/supabase-js';
+
+/*
+|--------------------------------------------------------------------------
+| APP
+|--------------------------------------------------------------------------
+*/
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT =
+  Number(process.env.PORT) || 3000;
 
 /*
 |--------------------------------------------------------------------------
@@ -21,13 +34,13 @@ const PORT = Number(process.env.PORT) || 3000;
 */
 
 const ML_CLIENT_ID =
-  process.env.ML_CLIENT_ID || '';
+  process.env.ML_CLIENT_ID?.trim() || '';
 
 const ML_CLIENT_SECRET =
-  process.env.ML_CLIENT_SECRET || '';
+  process.env.ML_CLIENT_SECRET?.trim() || '';
 
 const ML_REDIRECT_URI =
-  process.env.ML_REDIRECT_URI ||
+  process.env.ML_REDIRECT_URI?.trim() ||
   'https://ofertas-api-hzi5.onrender.com/auth/mercadolivre/callback';
 
 const ML_API_BASE =
@@ -36,6 +49,25 @@ const ML_API_BASE =
 const ML_AUTH_BASE =
   'https://auth.mercadolivre.com.br';
 
+const ML_SITE_ID =
+  'MLB';
+
+/*
+|--------------------------------------------------------------------------
+| SCOPES OAUTH
+|--------------------------------------------------------------------------
+|
+| O Mercado Livre documenta os scopes:
+|
+| offline_access
+| read
+| write
+|
+*/
+
+const ML_OAUTH_SCOPE =
+  'offline_access read write';
+
 /*
 |--------------------------------------------------------------------------
 | SUPABASE
@@ -43,36 +75,32 @@ const ML_AUTH_BASE =
 */
 
 const SUPABASE_URL =
-  process.env.SUPABASE_URL || '';
+  process.env.SUPABASE_URL?.trim() || '';
 
 const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || '';
 
-const supabase =
+let supabase:
+  | SupabaseClient
+  | null = null;
+
+if (
   SUPABASE_URL &&
   SUPABASE_SERVICE_ROLE_KEY
-    ? createClient(
-        SUPABASE_URL,
-        SUPABASE_SERVICE_ROLE_KEY
-      )
-    : null;
+) {
+  supabase = createClient(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY
+  );
+}
 
 console.log(
   `Supabase configurado: ${Boolean(supabase)}`
 );
 
-if (SUPABASE_URL) {
-  console.log(
-    `Projeto Supabase: ${SUPABASE_URL.substring(
-      0,
-      35
-    )}...`
-  );
-}
-
 /*
 |--------------------------------------------------------------------------
-| TOKENS EM MEMÓRIA
+| TOKENS
 |--------------------------------------------------------------------------
 */
 
@@ -83,7 +111,8 @@ let ML_ACCESS_TOKEN:
 let ML_REFRESH_TOKEN:
   | string
   | null =
-  process.env.ML_REFRESH_TOKEN || null;
+  process.env.ML_REFRESH_TOKEN?.trim() ||
+  null;
 
 let ML_TOKEN_EXPIRES_AT:
   | number
@@ -93,23 +122,27 @@ let ML_USER_ID:
   | number
   | null = null;
 
+let ML_TOKEN_SCOPE:
+  | string
+  | null = null;
+
 /*
 |--------------------------------------------------------------------------
-| OAUTH STATES
+| OAUTH STATE
 |--------------------------------------------------------------------------
 */
 
-const oauthStates = new Map<
-  string,
-  {
-    codeVerifier: string;
-    createdAt: number;
-  }
->();
+interface OAuthState {
+  codeVerifier: string;
+  createdAt: number;
+}
+
+const oauthStates =
+  new Map<string, OAuthState>();
 
 /*
 |--------------------------------------------------------------------------
-| TIPOS AUXILIARES
+| TIPOS
 |--------------------------------------------------------------------------
 */
 
@@ -146,17 +179,18 @@ interface ProdutoOfertasApp {
 
 /*
 |--------------------------------------------------------------------------
-| LIMPAR STATES ANTIGOS
+| UTILITÁRIOS
 |--------------------------------------------------------------------------
 */
 
 function limparStatesAntigos() {
-  const agora = Date.now();
+  const agora =
+    Date.now();
 
-  for (const [
-    state,
-    dados,
-  ] of oauthStates.entries()) {
+  for (
+    const [state, dados]
+    of oauthStates.entries()
+  ) {
     if (
       agora - dados.createdAt >
       10 * 60 * 1000
@@ -166,9 +200,23 @@ function limparStatesAntigos() {
   }
 }
 
+function invalidarAccessToken() {
+  ML_ACCESS_TOKEN = null;
+  ML_TOKEN_EXPIRES_AT = null;
+}
+
+function tokenAindaValido() {
+  return Boolean(
+    ML_ACCESS_TOKEN &&
+    ML_TOKEN_EXPIRES_AT &&
+    Date.now() <
+      ML_TOKEN_EXPIRES_AT - 60_000
+  );
+}
+
 /*
 |--------------------------------------------------------------------------
-| SALVAR TOKEN NO SUPABASE
+| SUPABASE — SALVAR TOKEN
 |--------------------------------------------------------------------------
 */
 
@@ -176,8 +224,10 @@ async function salvarTokenNoBanco(
   accessToken: string | null,
   refreshToken: string | null,
   expiresAt: number | null,
-  usuarioId: number | null
+  usuarioId: number | null,
+  scope: string | null
 ): Promise<boolean> {
+
   if (!supabase) {
     console.error(
       'Supabase não configurado.'
@@ -188,7 +238,7 @@ async function salvarTokenNoBanco(
 
   if (!accessToken) {
     console.error(
-      'Access token não recebido.'
+      'Access token ausente.'
     );
 
     return false;
@@ -196,15 +246,16 @@ async function salvarTokenNoBanco(
 
   if (!refreshToken) {
     console.error(
-      'Refresh token não recebido.'
+      'Refresh token ausente.'
     );
 
     return false;
   }
 
   try {
+
     const {
-      data: registroExistente,
+      data: existente,
       error: erroBusca,
     } = await supabase
       .from('mercado_livre_tokens')
@@ -217,77 +268,87 @@ async function salvarTokenNoBanco(
 
     if (erroBusca) {
       console.error(
-        'Erro ao verificar token existente:',
+        'Erro buscando token:',
         erroBusca
       );
 
       return false;
     }
 
-    const usuarioFinal =
-      usuarioId ??
-      ML_USER_ID ??
-      null;
+    /*
+     * IMPORTANTE:
+     *
+     * Não adicionamos "scope" ao banco nesta versão
+     * porque sua tabela atual pode não possuir essa coluna.
+     *
+     * O scope continua disponível em memória e nos
+     * endpoints de diagnóstico.
+     */
 
     const dados = {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      expires_at: expiresAt,
-      usuario_id: usuarioFinal,
+      access_token:
+        accessToken,
+
+      refresh_token:
+        refreshToken,
+
+      expires_at:
+        expiresAt,
+
+      usuario_id:
+        usuarioId ??
+        ML_USER_ID ??
+        null,
+
       atualizado_em:
         new Date().toISOString(),
     };
 
-    if (registroExistente?.id) {
+    if (existente?.id) {
+
       const {
-        error: erroAtualizacao,
+        error,
       } = await supabase
         .from('mercado_livre_tokens')
         .update(dados)
         .eq(
           'id',
-          registroExistente.id
+          existente.id
         );
 
-      if (erroAtualizacao) {
+      if (error) {
         console.error(
-          'Erro ao atualizar token:',
-          erroAtualizacao
+          'Erro atualizando token:',
+          error
         );
 
         return false;
       }
 
-      console.log(
-        'Token do Mercado Livre atualizado no Supabase.'
-      );
-
       return true;
     }
 
     const {
-      error: erroInsercao,
+      error,
     } = await supabase
       .from('mercado_livre_tokens')
       .insert(dados);
 
-    if (erroInsercao) {
+    if (error) {
       console.error(
-        'Erro ao inserir token:',
-        erroInsercao
+        'Erro inserindo token:',
+        error
       );
 
       return false;
     }
 
-    console.log(
-      'Token do Mercado Livre salvo no Supabase.'
-    );
-
     return true;
+
   } catch (erro) {
+
     console.error(
-      'Erro ao salvar token:',
+      'Erro Supabase:',
       erro
     );
 
@@ -297,20 +358,18 @@ async function salvarTokenNoBanco(
 
 /*
 |--------------------------------------------------------------------------
-| CARREGAR TOKEN DO SUPABASE
+| SUPABASE — CARREGAR TOKEN
 |--------------------------------------------------------------------------
 */
 
 async function carregarTokenDoBanco(): Promise<boolean> {
-  if (!supabase) {
-    console.error(
-      'Supabase não configurado.'
-    );
 
+  if (!supabase) {
     return false;
   }
 
   try {
+
     const {
       data,
       error,
@@ -327,7 +386,7 @@ async function carregarTokenDoBanco(): Promise<boolean> {
 
     if (error) {
       console.error(
-        'Erro ao carregar token do Supabase:',
+        'Erro carregando token:',
         error
       );
 
@@ -335,10 +394,6 @@ async function carregarTokenDoBanco(): Promise<boolean> {
     }
 
     if (!data) {
-      console.log(
-        'Nenhum token do Mercado Livre encontrado no Supabase.'
-      );
-
       return false;
     }
 
@@ -358,23 +413,15 @@ async function carregarTokenDoBanco(): Promise<boolean> {
         ? Number(data.usuario_id)
         : null;
 
-    console.log(
-      'Token do Mercado Livre carregado do Supabase.'
-    );
-
-    if (ML_USER_ID) {
-      console.log(
-        `Usuário Mercado Livre carregado: ${ML_USER_ID}`
-      );
-    }
-
     return Boolean(
       ML_ACCESS_TOKEN ||
       ML_REFRESH_TOKEN
     );
+
   } catch (erro) {
+
     console.error(
-      'Erro ao acessar Supabase:',
+      'Erro lendo Supabase:',
       erro
     );
 
@@ -384,27 +431,26 @@ async function carregarTokenDoBanco(): Promise<boolean> {
 
 /*
 |--------------------------------------------------------------------------
-| RENOVAR ACCESS TOKEN
+| RENOVAR TOKEN
 |--------------------------------------------------------------------------
 */
 
 async function renovarAccessToken(): Promise<string | null> {
+
   if (
     !ML_REFRESH_TOKEN ||
     !ML_CLIENT_ID ||
     !ML_CLIENT_SECRET
   ) {
+
     console.error(
-      'Não é possível renovar: credenciais ou refresh token ausentes.'
+      'Credenciais ou refresh token ausentes.'
     );
 
     return null;
   }
 
   try {
-    console.log(
-      'Renovando token do Mercado Livre...'
-    );
 
     const resposta =
       await fetch(
@@ -422,6 +468,7 @@ async function renovarAccessToken(): Promise<string | null> {
 
           body:
             new URLSearchParams({
+
               grant_type:
                 'refresh_token',
 
@@ -434,55 +481,57 @@ async function renovarAccessToken(): Promise<string | null> {
               refresh_token:
                 ML_REFRESH_TOKEN,
             }),
-          }
-        );
+        }
+      );
 
     const dados =
-      (await resposta.json()) as MercadoLivreTokenResponse;
+      await resposta.json() as MercadoLivreTokenResponse;
 
     if (!resposta.ok) {
+
       console.error(
-        'Erro ao renovar token. HTTP:',
-        resposta.status
+        'Falha renovando token:',
+        resposta.status,
+        dados
       );
 
       return null;
     }
 
     if (!dados.access_token) {
-      console.error(
-        'Mercado Livre não retornou access token na renovação.'
-      );
-
       return null;
     }
 
-    /*
-     * O Mercado Livre gera um NOVO refresh token.
-     * É obrigatório substituir o antigo.
-     */
-
     ML_ACCESS_TOKEN =
       dados.access_token;
+
+    /*
+     * O Mercado Livre pode devolver um NOVO
+     * refresh_token.
+     *
+     * Sempre devemos substituir o antigo.
+     */
 
     if (dados.refresh_token) {
       ML_REFRESH_TOKEN =
         dados.refresh_token;
     }
 
-    if (dados.expires_in) {
-      ML_TOKEN_EXPIRES_AT =
-        Date.now() +
-        Number(dados.expires_in) *
-          1000;
-    } else {
-      ML_TOKEN_EXPIRES_AT =
-        null;
-    }
+    ML_TOKEN_EXPIRES_AT =
+      dados.expires_in
+        ? Date.now() +
+          Number(dados.expires_in) *
+            1000
+        : null;
 
     if (dados.user_id) {
       ML_USER_ID =
         Number(dados.user_id);
+    }
+
+    if (dados.scope) {
+      ML_TOKEN_SCOPE =
+        dados.scope;
     }
 
     const salvo =
@@ -490,25 +539,23 @@ async function renovarAccessToken(): Promise<string | null> {
         ML_ACCESS_TOKEN,
         ML_REFRESH_TOKEN,
         ML_TOKEN_EXPIRES_AT,
-        ML_USER_ID
+        ML_USER_ID,
+        ML_TOKEN_SCOPE
       );
 
     if (!salvo) {
-      console.error(
-        'Token renovado, mas não foi possível salvá-lo no Supabase.'
-      );
 
-      return null;
+      console.error(
+        'Token renovado, mas não salvo no Supabase.'
+      );
     }
 
-    console.log(
-      'Token renovado e salvo no Supabase.'
-    );
-
     return ML_ACCESS_TOKEN;
+
   } catch (erro) {
+
     console.error(
-      'Erro ao renovar token:',
+      'Erro renovando access token:',
       erro
     );
 
@@ -518,71 +565,36 @@ async function renovarAccessToken(): Promise<string | null> {
 
 /*
 |--------------------------------------------------------------------------
-| GARANTIR ACCESS TOKEN
+| GARANTIR TOKEN
 |--------------------------------------------------------------------------
 */
 
 async function garantirAccessToken(): Promise<string | null> {
-  /*
-   * Se ainda está válido, usa o token atual.
-   */
 
-  if (
-    ML_ACCESS_TOKEN &&
-    ML_TOKEN_EXPIRES_AT &&
-    Date.now() <
-      ML_TOKEN_EXPIRES_AT -
-        60_000
-  ) {
+  if (tokenAindaValido()) {
     return ML_ACCESS_TOKEN;
   }
-
-  /*
-   * Se não existe nada em memória,
-   * tenta carregar do Supabase.
-   */
 
   if (
     !ML_ACCESS_TOKEN &&
     !ML_REFRESH_TOKEN
   ) {
+
     await carregarTokenDoBanco();
   }
 
-  /*
-   * Verifica novamente.
-   */
-
-  if (
-    ML_ACCESS_TOKEN &&
-    ML_TOKEN_EXPIRES_AT &&
-    Date.now() <
-      ML_TOKEN_EXPIRES_AT -
-        60_000
-  ) {
+  if (tokenAindaValido()) {
     return ML_ACCESS_TOKEN;
   }
 
-  /*
-   * Se temos refresh token, renova.
-   */
-
   if (ML_REFRESH_TOKEN) {
+
     return renovarAccessToken();
   }
 
-  /*
-   * Última tentativa de carregar
-   * diretamente do Supabase.
-   */
+  await carregarTokenDoBanco();
 
-  const carregou =
-    await carregarTokenDoBanco();
-
-  if (
-    carregou &&
-    ML_ACCESS_TOKEN
-  ) {
+  if (tokenAindaValido()) {
     return ML_ACCESS_TOKEN;
   }
 
@@ -591,36 +603,182 @@ async function garantirAccessToken(): Promise<string | null> {
 
 /*
 |--------------------------------------------------------------------------
-| LIMPAR TOKEN QUANDO MERCADO LIVRE REJEITAR
-|--------------------------------------------------------------------------
-*/
-
-function invalidarAccessToken() {
-  ML_ACCESS_TOKEN = null;
-  ML_TOKEN_EXPIRES_AT = null;
-}
-
-/*
-|--------------------------------------------------------------------------
-| GET COM MERCADO LIVRE
+| REQUEST MERCADO LIVRE
 |--------------------------------------------------------------------------
 */
 
 async function mercadoLivreGet(
   url: string,
-  accessToken: string
+  accessToken?: string
+): Promise<globalThis.Response> {
+
+  const headers: Record<string, string> = {
+    Accept:
+      'application/json',
+  };
+
+  if (accessToken) {
+
+    headers.Authorization =
+      `Bearer ${accessToken}`;
+  }
+
+  return fetch(
+    url,
+    {
+      method: 'GET',
+      headers,
+    }
+  );
+}
+
+/*
+|--------------------------------------------------------------------------
+| LER JSON
+|--------------------------------------------------------------------------
+*/
+
+async function lerJson(
+  resposta: globalThis.Response
+): Promise<any> {
+
+  const texto =
+    await resposta.text();
+
+  if (!texto) {
+    return null;
+  }
+
+  try {
+
+    return JSON.parse(texto);
+
+  } catch {
+
+    return {
+      resposta_texto:
+        texto,
+    };
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| DIAGNÓSTICO 403
+|--------------------------------------------------------------------------
+*/
+
+function diagnosticar403(
+  dados: any
 ) {
-  return fetch(url, {
-    method: 'GET',
 
-    headers: {
-      Authorization:
-        `Bearer ${accessToken}`,
+  const codigo =
+    dados?.code ||
+    dados?.error ||
+    null;
 
-      Accept:
-        'application/json',
-    },
-  });
+  const mensagem =
+    String(
+      dados?.message ||
+      dados?.error_description ||
+      ''
+    );
+
+  const mensagemLower =
+    mensagem.toLowerCase();
+
+  if (
+    codigo ===
+      'PA_UNAUTHORIZED_RESULT_FROM_POLICIES' ||
+    mensagemLower.includes(
+      'policy'
+    ) ||
+    mensagemLower.includes(
+      'permission'
+    ) ||
+    mensagemLower.includes(
+      'scope'
+    )
+  ) {
+
+    return {
+
+      causa:
+        'PERMISSAO_OU_SCOPE',
+
+      mensagem:
+        'O Mercado Livre informou que pelo menos uma política de autorização não permitiu o acesso.',
+
+      verificar: [
+
+        'A aplicação possui as permissões funcionais necessárias.',
+
+        'O usuário autorizou novamente a aplicação depois da alteração das permissões.',
+
+        'O token possui os scopes read/write/offline_access.',
+
+        'O access token pertence ao mesmo usuário que autorizou a aplicação.',
+      ],
+
+      acao:
+        'Revogue a autorização antiga e faça o OAuth novamente.',
+    };
+  }
+
+  if (
+    codigo === 'forbidden'
+  ) {
+
+    return {
+
+      causa:
+        'FORBIDDEN',
+
+      mensagem:
+        'O Mercado Livre recusou a chamada com HTTP 403.',
+
+      verificar: [
+
+        'Permissões da aplicação.',
+
+        'Grant do usuário.',
+
+        'Access token.',
+
+        'IP configurado na aplicação.',
+
+        'Conta Mercado Livre utilizada na autorização.',
+
+        'Possíveis restrições da aplicação.',
+      ],
+
+      acao:
+        'Verifique /api/mercadolivre/grants e /api/mercadolivre/aplicacao e depois faça nova autorização OAuth.',
+    };
+  }
+
+  return {
+
+    causa:
+      'FORBIDDEN_NAO_CLASSIFICADO',
+
+    mensagem:
+      'O Mercado Livre retornou HTTP 403.',
+
+    verificar: [
+
+      'Resposta original da API.',
+
+      'Scopes do token.',
+
+      'Grant do usuário.',
+
+      'IP permitido na aplicação.',
+    ],
+
+    acao:
+      'Execute novamente /api/mercadolivre/testes.',
+  };
 }
 
 /*
@@ -631,10 +789,19 @@ async function mercadoLivreGet(
 
 app.get(
   '/',
-  (_req: Request, res: Response) => {
+  (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
     return res.json({
-      nome: 'Ofertas API',
-      status: 'online',
+
+      nome:
+        'Ofertas API',
+
+      status:
+        'online',
+
       mensagem:
         'API do Ofertas App funcionando.',
     });
@@ -643,15 +810,22 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| TESTE
+| TESTE LOCAL
 |--------------------------------------------------------------------------
 */
 
 app.get(
   '/api/teste',
-  (_req: Request, res: Response) => {
+  (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
     return res.json({
-      sucesso: true,
+
+      sucesso:
+        true,
+
       mensagem:
         'Backend funcionando corretamente.',
     });
@@ -660,21 +834,27 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| STATUS DO MERCADO LIVRE
+| STATUS
 |--------------------------------------------------------------------------
 */
 
 app.get(
   '/api/mercadolivre/status',
-  async (_req: Request, res: Response) => {
-    const accessToken =
+  async (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
+    const token =
       await garantirAccessToken();
 
     return res.json({
-      sucesso: true,
+
+      sucesso:
+        true,
 
       autorizado:
-        Boolean(accessToken),
+        Boolean(token),
 
       usuario_id:
         ML_USER_ID,
@@ -685,106 +865,140 @@ app.get(
           ML_REFRESH_TOKEN
         ),
 
+      token_valido:
+        tokenAindaValido(),
+
+      token_scope:
+        ML_TOKEN_SCOPE,
+
+      scopes_esperados:
+        ML_OAUTH_SCOPE,
+
       supabase_configurado:
         Boolean(supabase),
+
+      client_id_configurado:
+        Boolean(ML_CLIENT_ID),
+
+      redirect_uri:
+        ML_REDIRECT_URI,
     });
   }
 );
 
 /*
 |--------------------------------------------------------------------------
-| CONSULTAR USUÁRIO
+| USUÁRIO
 |--------------------------------------------------------------------------
 */
 
 app.get(
   '/api/mercadolivre/usuario',
-  async (_req: Request, res: Response) => {
-    const accessToken =
+  async (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
+    let token =
       await garantirAccessToken();
 
-    if (!accessToken) {
+    if (!token) {
+
       return res.status(401).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
-          'Mercado Livre ainda não foi autorizado.',
+          'Mercado Livre não autorizado.',
       });
     }
 
     try {
-      const resposta =
+
+      let resposta =
         await mercadoLivreGet(
           `${ML_API_BASE}/users/me`,
-          accessToken
+          token
         );
+
+      if (
+        resposta.status === 401
+      ) {
+
+        invalidarAccessToken();
+
+        token =
+          await renovarAccessToken();
+
+        if (!token) {
+
+          return res.status(401).json({
+
+            sucesso:
+              false,
+
+            erro:
+              'Token expirado e não foi possível renová-lo.',
+          });
+        }
+
+        resposta =
+          await mercadoLivreGet(
+            `${ML_API_BASE}/users/me`,
+            token
+          );
+      }
 
       const dados =
-        await resposta.json();
+        await lerJson(resposta);
 
       if (!resposta.ok) {
-        console.error(
-          'Erro ao consultar usuário. HTTP:',
-          resposta.status
-        );
-
-        if (
-          resposta.status === 401
-        ) {
-          invalidarAccessToken();
-
-          const novoToken =
-            await renovarAccessToken();
-
-          if (novoToken) {
-            const novaResposta =
-              await mercadoLivreGet(
-                `${ML_API_BASE}/users/me`,
-                novoToken
-              );
-
-            const novosDados =
-              await novaResposta.json();
-
-            if (novaResposta.ok) {
-              return res.json({
-                sucesso: true,
-                usuario:
-                  novosDados,
-              });
-            }
-          }
-        }
 
         return res.status(
           resposta.status
         ).json({
-          sucesso: false,
+
+          sucesso:
+            false,
+
           erro:
-            'Não foi possível consultar o usuário no Mercado Livre.',
+            'Não foi possível consultar o usuário.',
+
           detalhes:
             dados,
         });
       }
 
-      if (dados.id) {
+      if (dados?.id) {
+
         ML_USER_ID =
           Number(dados.id);
       }
 
       return res.json({
-        sucesso: true,
-        usuario: dados,
+
+        sucesso:
+          true,
+
+        usuario:
+          dados,
       });
+
     } catch (erro) {
+
       console.error(
-        'Erro ao consultar usuário:',
+        'Erro /users/me:',
         erro
       );
 
       return res.status(500).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
-          'Falha de comunicação com o Mercado Livre.',
+          'Falha de comunicação com Mercado Livre.',
       });
     }
   }
@@ -792,68 +1006,89 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| CONSULTAR APLICAÇÃO
+| APLICAÇÃO
 |--------------------------------------------------------------------------
 */
 
 app.get(
   '/api/mercadolivre/aplicacao',
-  async (_req: Request, res: Response) => {
-    const accessToken =
+  async (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
+    const token =
       await garantirAccessToken();
 
-    if (!accessToken) {
+    if (!token) {
+
       return res.status(401).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
           'Mercado Livre não autorizado.',
       });
     }
 
     if (!ML_CLIENT_ID) {
+
       return res.status(500).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
           'ML_CLIENT_ID não configurado.',
       });
     }
 
     try {
+
       const resposta =
         await mercadoLivreGet(
           `${ML_API_BASE}/applications/${ML_CLIENT_ID}`,
-          accessToken
+          token
         );
 
       const dados =
-        await resposta.json();
+        await lerJson(resposta);
 
-      if (!resposta.ok) {
-        return res.status(
-          resposta.status
-        ).json({
-          sucesso: false,
-          erro:
-            'Não foi possível consultar a aplicação no Mercado Livre.',
-          detalhes:
-            dados,
-        });
-      }
+      return res.status(
+        resposta.ok
+          ? 200
+          : resposta.status
+      ).json({
 
-      return res.json({
-        sucesso: true,
-        aplicacao: dados,
+        sucesso:
+          resposta.ok,
+
+        aplicacao:
+          resposta.ok
+            ? dados
+            : undefined,
+
+        detalhes:
+          resposta.ok
+            ? undefined
+            : dados,
       });
+
     } catch (erro) {
+
       console.error(
-        'Erro ao consultar aplicação:',
+        'Erro aplicação:',
         erro
       );
 
       return res.status(500).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
-          'Falha de comunicação com o Mercado Livre.',
+          'Falha de comunicação com Mercado Livre.',
       });
     }
   }
@@ -861,18 +1096,129 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| INICIAR OAUTH
+| GRANTS DA APLICAÇÃO
+|--------------------------------------------------------------------------
+|
+| Essa rota é importante para descobrir exatamente
+| quais permissões o Mercado Livre concedeu ao usuário.
+|
+*/
+
+app.get(
+  '/api/mercadolivre/grants',
+  async (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
+    const token =
+      await garantirAccessToken();
+
+    if (!token) {
+
+      return res.status(401).json({
+
+        sucesso:
+          false,
+
+        erro:
+          'Mercado Livre não autorizado.',
+      });
+    }
+
+    if (!ML_CLIENT_ID) {
+
+      return res.status(500).json({
+
+        sucesso:
+          false,
+
+        erro:
+          'ML_CLIENT_ID não configurado.',
+      });
+    }
+
+    try {
+
+      const resposta =
+        await mercadoLivreGet(
+          `${ML_API_BASE}/applications/${ML_CLIENT_ID}/grants`,
+          token
+        );
+
+      const dados =
+        await lerJson(resposta);
+
+      return res.status(
+        resposta.ok
+          ? 200
+          : resposta.status
+      ).json({
+
+        sucesso:
+          resposta.ok,
+
+        app_id:
+          ML_CLIENT_ID,
+
+        usuario_id:
+          ML_USER_ID,
+
+        grants:
+          resposta.ok
+            ? dados
+            : null,
+
+        detalhes:
+          resposta.ok
+            ? null
+            : dados,
+      });
+
+    } catch (erro) {
+
+      console.error(
+        'Erro grants:',
+        erro
+      );
+
+      return res.status(500).json({
+
+        sucesso:
+          false,
+
+        erro:
+          'Falha consultando grants do Mercado Livre.',
+      });
+    }
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| OAUTH
 |--------------------------------------------------------------------------
 */
 
 app.get(
   '/auth/mercadolivre',
-  (_req: Request, res: Response) => {
-    if (!ML_CLIENT_ID) {
+  (
+    _req: Request,
+    res: ExpressResponse
+  ) => {
+
+    if (
+      !ML_CLIENT_ID ||
+      !ML_CLIENT_SECRET
+    ) {
+
       return res.status(500).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
-          'ML_CLIENT_ID não configurado.',
+          'Credenciais do Mercado Livre não configuradas.',
       });
     }
 
@@ -898,59 +1244,76 @@ app.get(
       state,
       {
         codeVerifier,
+
         createdAt:
           Date.now(),
       }
     );
 
-    const authorizationUrl =
+    const url =
       new URL(
         `${ML_AUTH_BASE}/authorization`
       );
 
-    authorizationUrl.searchParams.set(
+    url.searchParams.set(
       'response_type',
       'code'
     );
 
-    authorizationUrl.searchParams.set(
+    url.searchParams.set(
       'client_id',
       ML_CLIENT_ID
     );
 
-    authorizationUrl.searchParams.set(
+    url.searchParams.set(
       'redirect_uri',
       ML_REDIRECT_URI
     );
 
-    authorizationUrl.searchParams.set(
+    url.searchParams.set(
       'state',
       state
     );
 
     /*
-     * PKCE
+     * NOVO:
+     *
+     * Solicita explicitamente os scopes.
      */
 
-    authorizationUrl.searchParams.set(
+    url.searchParams.set(
+      'scope',
+      ML_OAUTH_SCOPE
+    );
+
+    url.searchParams.set(
       'code_challenge',
       codeChallenge
     );
 
-    authorizationUrl.searchParams.set(
+    url.searchParams.set(
       'code_challenge_method',
       'S256'
     );
 
+    console.log(
+      'Iniciando OAuth Mercado Livre.'
+    );
+
+    console.log(
+      'Scopes solicitados:',
+      ML_OAUTH_SCOPE
+    );
+
     return res.redirect(
-      authorizationUrl.toString()
+      url.toString()
     );
   }
 );
 
 /*
 |--------------------------------------------------------------------------
-| CALLBACK OAUTH
+| OAUTH CALLBACK
 |--------------------------------------------------------------------------
 */
 
@@ -958,8 +1321,9 @@ app.get(
   '/auth/mercadolivre/callback',
   async (
     req: Request,
-    res: Response
+    res: ExpressResponse
   ) => {
+
     const {
       code,
       state,
@@ -967,13 +1331,13 @@ app.get(
       error_description,
     } = req.query;
 
-    /*
-     * Mercado Livre recusou.
-     */
-
     if (error) {
+
       return res.status(400).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
           String(error),
 
@@ -986,16 +1350,13 @@ app.get(
       });
     }
 
-    /*
-     * Verifica parâmetros.
-     */
+    if (!code || !state) {
 
-    if (
-      !code ||
-      !state
-    ) {
       return res.status(400).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
           'code ou state não recebido.',
       });
@@ -1010,49 +1371,39 @@ app.get(
       );
 
     if (!oauthState) {
+
       return res.status(400).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
           'state inválido ou expirado.',
       });
     }
 
-    /*
-     * State só pode ser utilizado uma vez.
-     */
-
     oauthStates.delete(
       stateString
     );
-
-    /*
-     * State expira em 10 minutos.
-     */
 
     if (
       Date.now() -
         oauthState.createdAt >
       10 * 60 * 1000
     ) {
-      return res.status(400).json({
-        sucesso: false,
-        erro:
-          'A autorização expirou. Tente novamente.',
-      });
-    }
 
-    if (
-      !ML_CLIENT_ID ||
-      !ML_CLIENT_SECRET
-    ) {
-      return res.status(500).json({
-        sucesso: false,
+      return res.status(400).json({
+
+        sucesso:
+          false,
+
         erro:
-          'Credenciais do Mercado Livre não configuradas.',
+          'Autorização expirada.',
       });
     }
 
     try {
+
       const resposta =
         await fetch(
           `${ML_API_BASE}/oauth/token`,
@@ -1060,6 +1411,7 @@ app.get(
             method: 'POST',
 
             headers: {
+
               Accept:
                 'application/json',
 
@@ -1069,6 +1421,7 @@ app.get(
 
             body:
               new URLSearchParams({
+
                 grant_type:
                   'authorization_code',
 
@@ -1091,34 +1444,34 @@ app.get(
         );
 
       const dados =
-        (await resposta.json()) as MercadoLivreTokenResponse;
+        await lerJson(
+          resposta
+        ) as MercadoLivreTokenResponse;
 
       if (!resposta.ok) {
-        console.error(
-          'Erro OAuth Mercado Livre. HTTP:',
-          resposta.status
-        );
 
         return res.status(
           resposta.status
         ).json({
-          sucesso: false,
+
+          sucesso:
+            false,
+
           erro:
             'Mercado Livre recusou a autorização.',
+
           detalhes:
             dados,
         });
       }
 
-      /*
-       * Salva token em memória.
-       */
-
       ML_ACCESS_TOKEN =
-        dados.access_token || null;
+        dados.access_token ||
+        null;
 
       ML_REFRESH_TOKEN =
-        dados.refresh_token || null;
+        dados.refresh_token ||
+        null;
 
       ML_USER_ID =
         dados.user_id
@@ -1134,29 +1487,42 @@ app.get(
               1000
           : null;
 
-      /*
-       * Salva no Supabase.
-       */
+      ML_TOKEN_SCOPE =
+        dados.scope ||
+        null;
 
-      const tokenSalvo =
+      console.log(
+        'OAuth concluído.'
+      );
+
+      console.log(
+        'Usuário:',
+        ML_USER_ID
+      );
+
+      console.log(
+        'Scopes recebidos:',
+        ML_TOKEN_SCOPE
+      );
+
+      const salvo =
         await salvarTokenNoBanco(
           ML_ACCESS_TOKEN,
           ML_REFRESH_TOKEN,
           ML_TOKEN_EXPIRES_AT,
-          ML_USER_ID
+          ML_USER_ID,
+          ML_TOKEN_SCOPE
         );
 
-      /*
-       * Não retorna nenhum token.
-       */
-
       return res.json({
-        sucesso: true,
+
+        sucesso:
+          true,
 
         mensagem:
-          tokenSalvo
-            ? 'OAuth do Mercado Livre concluído e token salvo no Supabase.'
-            : 'OAuth concluído, mas não foi possível salvar o token no Supabase.',
+          salvo
+            ? 'OAuth concluído e token salvo.'
+            : 'OAuth concluído, mas token não foi salvo no Supabase.',
 
         token_recebido:
           Boolean(
@@ -1164,30 +1530,38 @@ app.get(
           ),
 
         token_salvo:
-          tokenSalvo,
-
-        tipo_token:
-          dados.token_type ||
-          null,
-
-        expiracao_segundos:
-          dados.expires_in ||
-          null,
+          salvo,
 
         usuario_id:
           dados.user_id ||
           null,
+
+        scope:
+          dados.scope ||
+          null,
+
+        scopes_esperados:
+          ML_OAUTH_SCOPE,
+
+        expiracao_segundos:
+          dados.expires_in ||
+          null,
       });
+
     } catch (erro) {
+
       console.error(
-        'Erro no callback OAuth:',
+        'Erro OAuth:',
         erro
       );
 
       return res.status(500).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
-          'Falha de comunicação com o Mercado Livre.',
+          'Falha de comunicação com Mercado Livre.',
       });
     }
   }
@@ -1195,50 +1569,60 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| CONVERTER ITEM DO MERCADO LIVRE
+| CONVERTER ITEM
 |--------------------------------------------------------------------------
 */
 
 function converterItem(
   item: any
 ): ProdutoOfertasApp {
+
   const preco =
-    Number(item.price);
+    Number(
+      item?.price
+    );
 
   const precoOriginal =
-    item.original_price != null
+    item?.original_price != null
       ? Number(
           item.original_price
         )
       : null;
 
-  let desconto = 0;
+  let desconto =
+    0;
 
   if (
-    precoOriginal &&
-    precoOriginal > preco
+    Number.isFinite(preco) &&
+    Number.isFinite(precoOriginal) &&
+    precoOriginal! > preco
   ) {
+
     desconto =
       Number(
         (
-          (1 -
+          (
+            1 -
             preco /
-              precoOriginal) *
+              precoOriginal!
+          ) *
           100
         ).toFixed(2)
       );
   }
 
   return {
+
     id:
-      item.id || null,
+      item?.id ||
+      null,
 
     produtoId:
-      item.catalog_product_id ||
+      item?.catalog_product_id ||
       null,
 
     nome:
-      item.title ||
+      item?.title ||
       'Produto sem nome',
 
     plataforma:
@@ -1251,7 +1635,7 @@ function converterItem(
 
     precoOriginal:
       Number.isFinite(
-        precoOriginal as number
+        precoOriginal
       )
         ? precoOriginal
         : null,
@@ -1259,39 +1643,39 @@ function converterItem(
     desconto,
 
     moeda:
-      item.currency_id ||
+      item?.currency_id ||
       'BRL',
 
     vendedorId:
-      item.seller?.id ||
-      item.seller_id ||
+      item?.seller?.id ||
+      item?.seller_id ||
       null,
 
     vendedor:
-      item.seller?.nickname ||
+      item?.seller?.nickname ||
       null,
 
     condicao:
-      item.condition ||
+      item?.condition ||
       null,
 
     link:
-      item.permalink ||
+      item?.permalink ||
       (
-        item.id
+        item?.id
           ? `https://www.mercadolivre.com.br/p/${item.id}`
           : null
       ),
 
     imagem:
-      item.thumbnail ||
-      item.pictures?.[0]?.url ||
+      item?.thumbnail ||
+      item?.pictures?.[0]?.url ||
       null,
 
     quantidadeVendida:
       Number.isFinite(
         Number(
-          item.sold_quantity
+          item?.sold_quantity
         )
       )
         ? Number(
@@ -1301,26 +1685,26 @@ function converterItem(
 
     freteGratis:
       Boolean(
-        item.shipping
+        item?.shipping
           ?.free_shipping
       ),
 
     categoriaId:
-      item.category_id ||
+      item?.category_id ||
       null,
 
     catalogo:
       Boolean(
-        item.catalog_listing
+        item?.catalog_listing
       ),
 
     cidade:
-      item.address
+      item?.address
         ?.city_name ||
       null,
 
     estado:
-      item.address
+      item?.address
         ?.state_name ||
       null,
   };
@@ -1328,63 +1712,51 @@ function converterItem(
 
 /*
 |--------------------------------------------------------------------------
-| BUSCAR ITENS NO MERCADO LIVRE
-|--------------------------------------------------------------------------
-|
-| Este é o mecanismo PRINCIPAL do Ofertas App.
-|
-| /sites/MLB/search
-|
-| Diferentemente de /products/search,
-| aqui trabalhamos com anúncios reais.
+| BUSCA /sites/MLB/search
 |--------------------------------------------------------------------------
 */
 
 async function pesquisarNoMercadoLivre(
   busca: string,
-  accessToken: string,
+  token: string,
   limite: number,
   offset: number
 ) {
-  const buscaUrl =
+
+  const url =
     new URL(
-      `${ML_API_BASE}/sites/MLB/search`
+      `${ML_API_BASE}/sites/${ML_SITE_ID}/search`
     );
 
-  buscaUrl.searchParams.set(
+  url.searchParams.set(
     'q',
     busca
   );
 
-  buscaUrl.searchParams.set(
+  url.searchParams.set(
     'limit',
     String(limite)
   );
 
-  buscaUrl.searchParams.set(
+  url.searchParams.set(
     'offset',
     String(offset)
   );
 
-  /*
-   * Ordena do menor preço
-   * para o maior.
-   */
-
-  buscaUrl.searchParams.set(
+  url.searchParams.set(
     'sort',
     'price_asc'
   );
 
   return mercadoLivreGet(
-    buscaUrl.toString(),
-    accessToken
+    url.toString(),
+    token
   );
 }
 
 /*
 |--------------------------------------------------------------------------
-| API DE PRODUTOS
+| PRODUTOS
 |--------------------------------------------------------------------------
 */
 
@@ -1392,32 +1764,52 @@ app.get(
   '/api/produtos',
   async (
     req: Request,
-    res: Response
+    res: ExpressResponse
   ) => {
+
     const busca =
       String(
         req.query.busca || ''
       ).trim();
 
     if (!busca) {
+
       return res.json({
-        sucesso: true,
-        busca: '',
-        quantidade: 0,
-        total: 0,
-        offset: 0,
-        limite: 20,
-        temMais: false,
-        proximoOffset: null,
-        menorPreco: null,
-        maiorPreco: null,
-        produtos: [],
+
+        sucesso:
+          true,
+
+        busca:
+          '',
+
+        quantidade:
+          0,
+
+        total:
+          0,
+
+        offset:
+          0,
+
+        limite:
+          20,
+
+        temMais:
+          false,
+
+        proximoOffset:
+          null,
+
+        menorPreco:
+          null,
+
+        maiorPreco:
+          null,
+
+        produtos:
+          [],
       });
     }
-
-    /*
-     * Limite.
-     */
 
     let limite =
       Number(
@@ -1439,10 +1831,6 @@ app.get(
         )
       );
 
-    /*
-     * Offset.
-     */
-
     let offset =
       Number(
         req.query.offset || 0
@@ -1458,89 +1846,140 @@ app.get(
     offset =
       Math.floor(offset);
 
-    /*
-     * Token.
-     */
-
-    let accessToken =
+    let token =
       await garantirAccessToken();
 
-    if (!accessToken) {
+    if (!token) {
+
       return res.status(401).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
-          'Mercado Livre não autorizado ou token expirado.',
+          'Mercado Livre não autorizado.',
       });
     }
 
     try {
-      /*
-       * PRIMEIRA TENTATIVA
-       */
 
       let resposta =
         await pesquisarNoMercadoLivre(
           busca,
-          accessToken,
+          token,
           limite,
           offset
         );
 
       /*
-       * Se token expirou ou foi rejeitado,
-       * renovamos e tentamos UMA vez.
+       * TOKEN EXPIRADO
        */
 
       if (
         resposta.status === 401
       ) {
-        console.log(
-          'Access token rejeitado. Tentando renovar...'
-        );
 
         invalidarAccessToken();
 
-        accessToken =
+        token =
           await renovarAccessToken();
 
-        if (!accessToken) {
+        if (!token) {
+
           return res.status(401).json({
-            sucesso: false,
+
+            sucesso:
+              false,
+
             erro:
-              'Token do Mercado Livre inválido ou expirado.',
+              'Token inválido ou expirado.',
           });
         }
 
         resposta =
           await pesquisarNoMercadoLivre(
             busca,
-            accessToken,
+            token,
             limite,
             offset
           );
       }
 
       const dados =
-        await resposta.json();
-
-      console.log(
-        `Busca Mercado Livre /sites/MLB/search: HTTP ${resposta.status}`
-      );
+        await lerJson(
+          resposta
+        );
 
       /*
-       * ERRO.
+       * RATE LIMIT
+       */
+
+      if (
+        resposta.status === 429
+      ) {
+
+        return res.status(429).json({
+
+          sucesso:
+            false,
+
+          erro:
+            'Limite de requisições do Mercado Livre atingido.',
+
+          detalhes:
+            dados,
+
+          retry_after:
+            resposta.headers.get(
+              'retry-after'
+            ),
+        });
+      }
+
+      /*
+       * FORBIDDEN
+       */
+
+      if (
+        resposta.status === 403
+      ) {
+
+        return res.status(403).json({
+
+          sucesso:
+            false,
+
+          erro:
+            'Mercado Livre recusou o acesso à busca.',
+
+          diagnostico:
+            diagnosticar403(
+              dados
+            ),
+
+          token_scope:
+            ML_TOKEN_SCOPE,
+
+          usuario_id:
+            ML_USER_ID,
+
+          detalhes:
+            dados,
+        });
+      }
+
+      /*
+       * OUTROS ERROS
        */
 
       if (!resposta.ok) {
-        console.error(
-          'Erro na busca do Mercado Livre:',
-          dados
-        );
 
         return res.status(
           resposta.status
         ).json({
-          sucesso: false,
+
+          sucesso:
+            false,
 
           erro:
             'Não foi possível pesquisar produtos no Mercado Livre.',
@@ -1550,26 +1989,22 @@ app.get(
         });
       }
 
-      /*
-       * RESULTADOS.
-       */
-
       const resultados =
         Array.isArray(
-          dados.results
+          dados?.results
         )
           ? dados.results
           : [];
 
-      /*
-       * Converte anúncios.
-       */
-
       const produtos =
         resultados
           .map(
-            (item: any) =>
-              converterItem(item)
+            (
+              item: any
+            ) =>
+              converterItem(
+                item
+              )
           )
           .filter(
             (
@@ -1583,73 +2018,36 @@ app.get(
               produto.preco > 0
           );
 
-      /*
-       * Ordenação local de segurança.
-       */
-
       produtos.sort(
         (
-          a: ProdutoOfertasApp,
-          b: ProdutoOfertasApp
+          a,
+          b
         ) =>
-          (a.preco || 0) -
-          (b.preco || 0)
+          (a.preco ?? 0) -
+          (b.preco ?? 0)
       );
-
-      /*
-       * Total informado pelo Mercado Livre.
-       */
 
       const total =
         Number(
-          dados.paging?.total || 0
+          dados?.paging?.total ||
+            0
         );
-
-      /*
-       * Quantidade efetivamente
-       * retornada.
-       */
 
       const quantidade =
         produtos.length;
 
-      /*
-       * Próximo offset.
-       */
-
       const proximoOffset =
-        offset + quantidade;
+        offset +
+        quantidade;
 
       const temMais =
         proximoOffset <
         total;
 
-      /*
-       * Menor preço.
-       */
-
-      const menorPreco =
-        produtos.length > 0
-          ? produtos[0].preco
-          : null;
-
-      /*
-       * Maior preço.
-       */
-
-      const maiorPreco =
-        produtos.length > 0
-          ? produtos[
-              produtos.length - 1
-            ].preco
-          : null;
-
-      /*
-       * RESPOSTA.
-       */
-
       return res.json({
-        sucesso: true,
+
+        sucesso:
+          true,
 
         busca,
 
@@ -1668,23 +2066,35 @@ app.get(
             ? proximoOffset
             : null,
 
-        menorPreco,
+        menorPreco:
+          produtos.length
+            ? produtos[0].preco
+            : null,
 
-        maiorPreco,
+        maiorPreco:
+          produtos.length
+            ? produtos[
+                produtos.length - 1
+              ].preco
+            : null,
 
         produtos,
       });
+
     } catch (erro) {
+
       console.error(
-        'Erro geral ao buscar produtos:',
+        'Erro /api/produtos:',
         erro
       );
 
       return res.status(500).json({
-        sucesso: false,
+
+        sucesso:
+          false,
 
         erro:
-          'Falha de comunicação com o Mercado Livre.',
+          'Falha de comunicação com Mercado Livre.',
       });
     }
   }
@@ -1692,12 +2102,7 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| TESTE DE ENDPOINTS DO MERCADO LIVRE
-|--------------------------------------------------------------------------
-|
-| Esta rota é útil para diagnóstico.
-|
-| Não mostra tokens.
+| TESTES DO MERCADO LIVRE
 |--------------------------------------------------------------------------
 */
 
@@ -1705,33 +2110,47 @@ app.get(
   '/api/mercadolivre/testes',
   async (
     _req: Request,
-    res: Response
+    res: ExpressResponse
   ) => {
-    const accessToken =
+
+    const token =
       await garantirAccessToken();
 
-    if (!accessToken) {
+    if (!token) {
+
       return res.status(401).json({
-        sucesso: false,
+
+        sucesso:
+          false,
+
         erro:
           'Mercado Livre não autorizado.',
       });
     }
 
-    const testes = [];
+    const resultados:
+      any[] = [];
 
     /*
-     * Teste /users/me
+     * TESTE 1
+     * /users/me
      */
 
     try {
+
       const resposta =
         await mercadoLivreGet(
           `${ML_API_BASE}/users/me`,
-          accessToken
+          token
         );
 
-      testes.push({
+      const dados =
+        await lerJson(
+          resposta
+        );
+
+      resultados.push({
+
         endpoint:
           '/users/me',
 
@@ -1745,15 +2164,25 @@ app.get(
           resposta.ok
             ? 'OK'
             : 'ERRO',
+
+        detalhes:
+          resposta.ok
+            ? undefined
+            : dados,
       });
+
     } catch {
-      testes.push({
+
+      resultados.push({
+
         endpoint:
           '/users/me',
 
-        status: 0,
+        status:
+          0,
 
-        autorizado: false,
+        autorizado:
+          false,
 
         resposta:
           'ERRO DE COMUNICAÇÃO',
@@ -1761,13 +2190,15 @@ app.get(
     }
 
     /*
-     * Teste /sites/MLB/search
+     * TESTE 2
+     * /sites/MLB/search
      */
 
     try {
+
       const url =
         new URL(
-          `${ML_API_BASE}/sites/MLB/search`
+          `${ML_API_BASE}/sites/${ML_SITE_ID}/search`
         );
 
       url.searchParams.set(
@@ -1780,13 +2211,25 @@ app.get(
         '1'
       );
 
+      url.searchParams.set(
+        'sort',
+        'price_asc'
+      );
+
       const resposta =
         await mercadoLivreGet(
           url.toString(),
-          accessToken
+          token
         );
 
-      testes.push({
+      const dados =
+        await lerJson(
+          resposta
+        );
+
+      const resultado:
+        any = {
+
         endpoint:
           '/sites/MLB/search',
 
@@ -1800,24 +2243,180 @@ app.get(
           resposta.ok
             ? 'OK'
             : 'ERRO',
-      });
+      };
+
+      if (
+        resposta.status === 403
+      ) {
+
+        resultado.diagnostico =
+          diagnosticar403(
+            dados
+          );
+      }
+
+      if (!resposta.ok) {
+
+        resultado.detalhes =
+          dados;
+      }
+
+      resultados.push(
+        resultado
+      );
+
     } catch {
-      testes.push({
+
+      resultados.push({
+
         endpoint:
           '/sites/MLB/search',
 
-        status: 0,
+        status:
+          0,
 
-        autorizado: false,
+        autorizado:
+          false,
 
         resposta:
           'ERRO DE COMUNICAÇÃO',
       });
     }
 
+    /*
+     * TESTE 3
+     * Aplicação
+     */
+
+    if (ML_CLIENT_ID) {
+
+      try {
+
+        const resposta =
+          await mercadoLivreGet(
+            `${ML_API_BASE}/applications/${ML_CLIENT_ID}`,
+            token
+          );
+
+        const dados =
+          await lerJson(
+            resposta
+          );
+
+        resultados.push({
+
+          endpoint:
+            `/applications/${ML_CLIENT_ID}`,
+
+          status:
+            resposta.status,
+
+          autorizado:
+            resposta.ok,
+
+          resposta:
+            resposta.ok
+              ? 'OK'
+              : 'ERRO',
+
+          detalhes:
+            dados,
+        });
+
+      } catch {
+
+        resultados.push({
+
+          endpoint:
+            '/applications/{APP_ID}',
+
+          status:
+            0,
+
+          autorizado:
+            false,
+
+          resposta:
+            'ERRO DE COMUNICAÇÃO',
+        });
+      }
+    }
+
+    /*
+     * TESTE 4
+     * GRANTS
+     */
+
+    if (ML_CLIENT_ID) {
+
+      try {
+
+        const resposta =
+          await mercadoLivreGet(
+            `${ML_API_BASE}/applications/${ML_CLIENT_ID}/grants`,
+            token
+          );
+
+        const dados =
+          await lerJson(
+            resposta
+          );
+
+        resultados.push({
+
+          endpoint:
+            `/applications/${ML_CLIENT_ID}/grants`,
+
+          status:
+            resposta.status,
+
+          autorizado:
+            resposta.ok,
+
+          resposta:
+            resposta.ok
+              ? 'OK'
+              : 'ERRO',
+
+          detalhes:
+            dados,
+        });
+
+      } catch {
+
+        resultados.push({
+
+          endpoint:
+            `/applications/${ML_CLIENT_ID}/grants`,
+
+          status:
+            0,
+
+          autorizado:
+            false,
+
+          resposta:
+            'ERRO DE COMUNICAÇÃO',
+        });
+      }
+    }
+
     return res.json({
-      sucesso: true,
-      testes,
+
+      sucesso:
+        true,
+
+      usuario_id:
+        ML_USER_ID,
+
+      token_scope:
+        ML_TOKEN_SCOPE,
+
+      scopes_esperados:
+        ML_OAUTH_SCOPE,
+
+      testes:
+        resultados,
     });
   }
 );
@@ -1829,156 +2428,44 @@ app.get(
 */
 
 async function iniciarServidor() {
-  /*
-   * Carrega token salvo.
-   */
 
   await carregarTokenDoBanco();
-
-  /*
-   * Inicia servidor.
-   */
 
   app.listen(
     PORT,
     '0.0.0.0',
     () => {
+
       console.log(
         `Ofertas API rodando na porta ${PORT}`
+      );
+
+      console.log(
+        `Mercado Livre: ${ML_SITE_ID}`
+      );
+
+      console.log(
+        `OAuth configurado: ${Boolean(
+          ML_CLIENT_ID
+        )}`
+      );
+
+      console.log(
+        `Scopes OAuth: ${ML_OAUTH_SCOPE}`
+      );
+
+      console.log(
+        `Supabase configurado: ${Boolean(
+          supabase
+        )}`
       );
     }
   );
 }
 
-
-
-/*
-|--------------------------------------------------------------------------
-| TESTES DO MERCADO LIVRE
-|--------------------------------------------------------------------------
-*/
-
-app.get(
-  '/api/mercadolivre/testes',
-  async (_req, res) => {
-    const accessToken =
-      await garantirAccessToken();
-
-    if (!accessToken) {
-      return res.status(401).json({
-        sucesso: false,
-        erro:
-          'Mercado Livre não autorizado ou token expirado.',
-      });
-    }
-
-    const resultados = [];
-
-    /*
-     * TESTE 1 — Usuário autenticado
-     */
-    try {
-      const respostaUsuario =
-        await fetch(
-          'https://api.mercadolibre.com/users/me',
-          {
-            headers: {
-              Authorization:
-                `Bearer ${accessToken}`,
-              Accept:
-                'application/json',
-            },
-          }
-        );
-
-      resultados.push({
-        endpoint: '/users/me',
-        status:
-          respostaUsuario.status,
-        autorizado:
-          respostaUsuario.ok,
-        resposta:
-          respostaUsuario.ok
-            ? 'OK'
-            : 'ERRO',
-      });
-    } catch (erro) {
-      resultados.push({
-        endpoint: '/users/me',
-        status: 0,
-        autorizado: false,
-        resposta: 'ERRO DE COMUNICAÇÃO',
-      });
-    }
-
-    /*
-     * TESTE 2 — Busca pública de anúncios
-     *
-     * Este é o endpoint principal usado
-     * pelo Ofertas App.
-     */
-    try {
-      const url =
-        new URL(
-          'https://api.mercadolibre.com/sites/MLB/search'
-        );
-
-      url.searchParams.set(
-        'q',
-        'iphone'
-      );
-
-      url.searchParams.set(
-        'limit',
-        '1'
-      );
-
-      const respostaBusca =
-        await fetch(
-          url.toString(),
-          {
-            headers: {
-              Authorization:
-                `Bearer ${accessToken}`,
-              Accept:
-                'application/json',
-            },
-          }
-        );
-
-      resultados.push({
-        endpoint:
-          '/sites/MLB/search',
-        status:
-          respostaBusca.status,
-        autorizado:
-          respostaBusca.ok,
-        resposta:
-          respostaBusca.ok
-            ? 'OK'
-            : 'ERRO',
-      });
-    } catch (erro) {
-      resultados.push({
-        endpoint:
-          '/sites/MLB/search',
-        status: 0,
-        autorizado: false,
-        resposta: 'ERRO DE COMUNICAÇÃO',
-      });
-    }
-
-    return res.json({
-      sucesso: true,
-      testes: resultados,
-    });
-  }
-);
-
-
-
 iniciarServidor().catch(
   (erro) => {
+
     console.error(
       'Erro fatal ao iniciar API:',
       erro
