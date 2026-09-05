@@ -1,10 +1,11 @@
 {
   "name": "ofertas-api",
+  "type": "module",
   "version": "1.0.0",
   "description": "Backend do Ofertas App",
   "main": "server.ts",
   "scripts": {
-    "dev": "tsx server.ts"
+    "dev": "tsx src/server.ts"
   },
   "keywords": [
     "ofertas",
