@@ -82,6 +82,11 @@ export async function gerarUrlAutorizacaoMercadoLivre(): Promise<string> {
     'S256'
   );
 
+  url.searchParams.set(
+    'scope',
+    'offline_access read write'
+  );
+
   return url.toString();
 }
 
