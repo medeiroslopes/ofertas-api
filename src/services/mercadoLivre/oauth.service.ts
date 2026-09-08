@@ -148,7 +148,16 @@ export async function processarCallbackOAuthMercadoLivre(
     await resposta.json() as
       MercadoLivreOAuthTokenResponse;
 
-  if (!resposta.ok) {
+    console.log('DIAGNOSTICO OAUTH MERCADO LIVRE:', {
+    accessTokenRecebido: Boolean(dados.access_token),
+    refreshTokenRecebido: Boolean(dados.refresh_token),
+    expiresIn: dados.expires_in,
+    usuarioId: dados.user_id,
+    scope: dados.scope,
+    camposRecebidos: Object.keys(dados),
+    });
+  
+    if (!resposta.ok) {
     console.error(
       'Erro trocando código OAuth:',
       resposta.status,
