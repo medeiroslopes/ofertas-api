@@ -87,6 +87,11 @@ export async function gerarUrlAutorizacaoMercadoLivre(): Promise<string> {
     'offline_access read write'
   );
 
+    console.log(
+    'URL OAUTH GERADA:',
+    url.toString()
+  );
+
   return url.toString();
 }
 
