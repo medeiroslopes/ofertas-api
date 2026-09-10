@@ -35,3 +35,25 @@ app.get('/api/mercadolivre/status', (_req, res) => {
     ...obterDadosToken(),
   });
 });
+
+
+app.get('/api/mercadolivre/teste-rede', async (_req, res) => {
+  try {
+    const resposta = await fetch(
+      'https://api.mercadolibre.com/sites/MLB'
+    );
+
+    const dados = await resposta.json();
+
+    return res.status(resposta.status).json({
+      sucesso: resposta.ok,
+      statusMercadoLivre: resposta.status,
+      dados,
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      sucesso: false,
+      erro: error?.message || 'Erro ao acessar Mercado Livre.',
+    });
+  }
+});
