@@ -56,6 +56,46 @@ app.get('/api/mercadolivre/teste-rede', async (_req, res) => {
 });
 
 
+app.get('/api/mercadolivre/teste-usuario', async (_req, res) => {
+  try {
+    const token = obterDadosToken();
+
+    if (!token.access_token) {
+      return res.status(401).json({
+        sucesso: false,
+        erro: 'Access token não disponível.',
+      });
+    }
+
+    const resposta = await fetch(
+      'https://api.mercadolibre.com/users/me',
+      {
+        headers: {
+          Authorization: `Bearer ${token.access_token}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    const dados = await resposta.json();
+
+    return res.status(resposta.status).json({
+      sucesso: resposta.ok,
+      statusMercadoLivre: resposta.status,
+      usuarioId: dados.id || null,
+      nickname: dados.nickname || null,
+      erro: dados.error || null,
+      mensagem: dados.message || null,
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      sucesso: false,
+      erro: error?.message || 'Erro ao consultar usuário do Mercado Livre.',
+    });
+  }
+});
+
+
 app.get('/api/mercadolivre/produtos', async (req, res) => {
   try {
     const consulta = String(req.query.q || '').trim();
