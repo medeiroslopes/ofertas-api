@@ -95,6 +95,27 @@ app.get('/api/mercadolivre/teste-usuario', async (_req, res) => {
   }
 });
 
+app.get('/api/mercadolivre/teste-banco', async (_req, res) => {
+  try {
+    const token = obterDadosToken();
+
+    return res.json({
+      sucesso: true,
+      memoria: {
+        usuarioId: token.usuarioId,
+        accessTokenConfigurado: token.accessTokenConfigurado,
+        tokenValido: token.tokenValido,
+        tokenScope: token.tokenScope,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      sucesso: false,
+      erro: error?.message || 'Erro ao verificar token.',
+    });
+  }
+});
+
 
 app.get('/api/mercadolivre/produtos', async (req, res) => {
   try {
