@@ -1,6 +1,9 @@
 import express from 'express';
 
-import { obterDadosToken } from './services/mercadoLivre/auth.service.js';
+import {
+  obterDadosToken,
+  garantirAccessToken,
+} from './services/mercadoLivre/auth.service.js';
 import {
   iniciarOAuthMercadoLivre,
   callbackOAuthMercadoLivre,
