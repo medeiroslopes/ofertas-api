@@ -61,12 +61,12 @@ app.get('/api/mercadolivre/teste-rede', async (_req, res) => {
 
 app.get('/api/mercadolivre/teste-usuario', async (_req, res) => {
   try {
-    const token = obterDadosToken();
+    const accessToken = await garantirAccessToken();
 
-    if (!token.access_token) {
+    if (!accessToken) {
       return res.status(401).json({
         sucesso: false,
-        erro: 'Access token não disponível.',
+        erro: 'Não foi possível obter um access token válido.',
       });
     }
 
@@ -74,7 +74,7 @@ app.get('/api/mercadolivre/teste-usuario', async (_req, res) => {
       'https://api.mercadolibre.com/users/me',
       {
         headers: {
-          Authorization: `Bearer ${token.access_token}`,
+          Authorization: `Bearer ${accessToken}`,
           Accept: 'application/json',
         },
       }
@@ -93,7 +93,7 @@ app.get('/api/mercadolivre/teste-usuario', async (_req, res) => {
   } catch (error: any) {
     return res.status(500).json({
       sucesso: false,
-      erro: error?.message || 'Erro ao consultar usuário do Mercado Livre.',
+      erro: error?.message || 'Erro ao consultar usuário.',
     });
   }
 });
