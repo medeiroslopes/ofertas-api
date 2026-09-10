@@ -39,21 +39,18 @@ app.get('/api/mercadolivre/status', (_req, res) => {
 
 app.get('/api/mercadolivre/teste-rede', async (_req, res) => {
   try {
-    const resposta = await fetch(
-      'https://api.mercadolibre.com/sites/MLB'
-    );
+    const resposta = await fetch('https://api.ipify.org?format=json');
 
     const dados = await resposta.json();
 
-    return res.status(resposta.status).json({
-      sucesso: resposta.ok,
-      statusMercadoLivre: resposta.status,
-      dados,
+    return res.status(200).json({
+      sucesso: true,
+      ipRender: dados.ip,
     });
   } catch (error: any) {
     return res.status(500).json({
       sucesso: false,
-      erro: error?.message || 'Erro ao acessar Mercado Livre.',
+      erro: error?.message || 'Erro ao descobrir IP do Render.',
     });
   }
 });
