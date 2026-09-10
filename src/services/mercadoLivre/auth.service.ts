@@ -8,6 +8,9 @@ interface MercadoLivreTokenResponse {
   user_id?: number;
   refresh_token?: string;
   scope?: string;
+  error?: string;
+  error_description?: string;
+  status?: number;
 }
 
 let ML_ACCESS_TOKEN: string | null = null;
