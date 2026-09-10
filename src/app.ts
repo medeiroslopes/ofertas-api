@@ -131,8 +131,24 @@ app.get('/api/mercadolivre/produtos', async (req, res) => {
       });
     }
 
+    const accessToken = await garantirAccessToken();
+
+    if (!accessToken) {
+      return res.status(401).json({
+        sucesso: false,
+        erro: 'Não foi possível obter um access token válido.',
+      });
+    }
+
     const resposta = await fetch(
       `https://api.mercadolibre.com/products/search?status=active&site_id=MLB&q=${encodeURIComponent(consulta)}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+      }
     );
 
     const dados = await resposta.json();
@@ -145,7 +161,9 @@ app.get('/api/mercadolivre/produtos', async (req, res) => {
   } catch (error: any) {
     return res.status(500).json({
       sucesso: false,
-      erro: error?.message || 'Erro ao buscar produtos no Mercado Livre.',
+      erro:
+        error?.message ||
+        'Erro ao buscar produtos no Mercado Livre.',
     });
   }
 });
