@@ -1,9 +1,15 @@
-import { app } from './app.js';
+import { app, gerenciador } from './app.js';
 import { env } from './config/env.js';
 import { carregarTokenDoBanco } from './services/mercadoLivre/auth.service.js';
+import { enviarOfertasAutomaticamente } from './services/agendamento/enviarOfertasAutomatico.js';
+import { iniciarAgendador } from './services/agendamento/agendador.js';
 
 async function iniciarServidor() {
   await carregarTokenDoBanco();
+
+iniciarAgendador(
+  () => gerenciador.buscarTodasAsOfertas()
+);
 
   app.listen(
     env.port,

@@ -86,13 +86,9 @@ export async function salvarTokenNoBanco(
         usuarioId ??
         ML_USER_ID ??
         null,
-      scope:
-        scope ??
-        ML_TOKEN_SCOPE ??
-        null,
-      atualizado_em:
-        new Date().toISOString(),
-    };
+    atualizado_em:
+       new Date().toISOString(),
+  };
 
     if (existente?.id) {
       const { error } =
@@ -290,13 +286,17 @@ async function renovarAccessToken(): Promise<string | null> {
         MercadoLivreTokenResponse;
 
     if (!resposta.ok) {
-      console.error(
+     console.error(
         'Falha renovando token:',
         resposta.status,
-        dados
+        {
+          error: dados.error,
+          error_description: dados.error_description,
+          status: dados.status,
+        }
       );
       return null;
-    }
+     }
 
     if (!dados.access_token) {
       return null;

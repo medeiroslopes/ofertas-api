@@ -1,30 +1,30 @@
 {
   "name": "ofertas-api",
-  "type": "module",
   "version": "1.0.0",
-  "description": "Backend do Ofertas App",
-  "main": "server.ts",
+  "description": "",
+  "main": "index.js",
   "scripts": {
-    "dev": "tsx src/server.ts"
+    "dev": "tsx src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
   },
-  "keywords": [
-    "ofertas",
-    "mercado-livre",
-    "shopee"
-  ],
+  "keywords": [],
   "author": "",
   "license": "ISC",
+  "type": "module",
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.4",
-    "cors": "^2.8.6",
+    "@supabase/supabase-js": "^2.109.0",
+    "@types/node": "^26.5.0",
+    "axios": "^1.20.0",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2",
+    "ws": "^8.21.3",
+    "tsx": "^4.20.5"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.4.0",
-    "tsx": "^4.23.13",
-    "typescript": "^7.0.2"
+    "@types/ws": "^8.18.1"
   }
 }

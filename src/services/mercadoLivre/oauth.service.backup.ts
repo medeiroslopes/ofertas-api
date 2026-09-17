@@ -1,4 +1,4 @@
-﻿import crypto from 'node:crypto';
+import crypto from 'node:crypto';
 
 import { env } from '../../config/env.js';
 import {
@@ -82,11 +82,6 @@ export async function gerarUrlAutorizacaoMercadoLivre(): Promise<string> {
     'S256'
   );
 
-  url.searchParams.set(
-    'scope',
-    'offline_access read write'
-  );
-
   return url.toString();
 }
 
@@ -99,7 +94,7 @@ export async function processarCallbackOAuthMercadoLivre(
 
   if (!dadosState) {
     throw new Error(
-      'state invÃ¡lido ou expirado.'
+      'state inválido ou expirado.'
     );
   }
 
@@ -153,30 +148,21 @@ export async function processarCallbackOAuthMercadoLivre(
     await resposta.json() as
       MercadoLivreOAuthTokenResponse;
 
-  console.log('DIAGNOSTICO OAUTH MERCADO LIVRE:', {
-    accessTokenRecebido: Boolean(dados.access_token),
-    refreshTokenRecebido: Boolean(dados.refresh_token),
-    expiresIn: dados.expires_in,
-    usuarioId: dados.user_id,
-    scope: dados.scope,
-    camposRecebidos: Object.keys(dados),
-  });
-
   if (!resposta.ok) {
     console.error(
-      'Erro trocando cÃ³digo OAuth:',
+      'Erro trocando código OAuth:',
       resposta.status,
       dados
     );
 
     throw new Error(
-      `Mercado Livre recusou o cÃ³digo OAuth. Status: ${resposta.status}`
+      `Mercado Livre recusou o código OAuth. Status: ${resposta.status}`
     );
   }
 
   if (!dados.access_token) {
     throw new Error(
-      'Mercado Livre nÃ£o retornou access token.'
+      'Mercado Livre não retornou access token.'
     );
   }
 
