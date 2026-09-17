@@ -1,0 +1,30 @@
+{
+  "name": "ofertas-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "@types/node": "^26.5.0",
+    "axios": "^1.20.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2",
+    "ws": "^8.21.3",
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.1"
+  }
+}
